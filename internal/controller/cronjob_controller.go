@@ -74,8 +74,8 @@ func (r *CronJobReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	// Step 2. 查询CornJob对象下所有的Job List
 	var childJobs kbatch.JobList
 
-	// 这个list方法配置了一个MatchingFields标签，这将会在controller runtime本地创建一个索引缓存
-	// 以便加速查询
+	// 根据索引获取所有的Job List
+	// 我们在Setup中为controller runtime本地创建了一个索引缓存以便加速查询
 	if err := r.List(ctx, &childJobs, client.InNamespace(req.Namespace),
 		client.MatchingFields{jobOwnerKey: req.Name}); err != nil {
 		log.Error(err, "unable to list child Jobs")
@@ -161,6 +161,7 @@ func (r *CronJobReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 			return ctrl.Result{}, nil
 		}
 
+		// 【NOTICE】REQUEUE RESULT
 		scheduledResult := ctrl.Result{RequeueAfter: nextRun.Sub(r.Now())} // save this so we can re-use it elsewhere
 		log = log.WithValues("now", r.Now(), "next run", nextRun)
 
@@ -199,6 +200,26 @@ func (r *CronJobReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 				}
 			}
 		}
+
+		// 构建Job对象
+		job, err := constructJobForCronJob(&cronJob, missedRun, r)
+		if err != nil {
+			log.Error(err, "unable to construct job from template")
+			// don't bother requeuing until we get a change to the spec
+			return scheduledResult, nil
+		}
+
+		// 应用到k8s cluster
+		if err := r.Create(ctx, job); err != nil {
+			log.Error(err, "unable to create Job for CronJob", "job", job)
+			return ctrl.Result{}, err
+		}
+
+		log.V(1).Info("created Job for CronJob run", "job", job)
+
+		// Step 7. Requeue
+		// we'll requeue once we see the running job, and update our status
+		return scheduledResult, nil
 	}
 
 	return ctrl.Result{}, nil
@@ -256,7 +277,32 @@ func (r *CronJobReconciler) cleanUpHistoryJobs(
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *CronJobReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	// set up a real clock, since we're not in a test
+	if r.Clock == nil {
+		r.Clock = realClock{}
+	}
+
+	// 创建一个indexer，用于根据CronJob的Owner获取Job
+	if err := mgr.GetFieldIndexer().IndexField(context.Background(), &kbatch.Job{}, jobOwnerKey, func(rawObj client.Object) []string {
+		// grab the job object, extract the owner...
+		job := rawObj.(*kbatch.Job)
+		owner := metav1.GetControllerOf(job)
+		if owner == nil {
+			return nil
+		}
+		// ...make sure it's a CronJob...
+		if owner.APIVersion != apiGVStr || owner.Kind != "CronJob" {
+			return nil
+		}
+
+		// ...and if so, return it
+		return []string{owner.Name}
+	}); err != nil {
+		return err
+	}
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&batchv1.CronJob{}).
+		Owns(&kbatch.Job{}).
 		Complete(r)
 }
