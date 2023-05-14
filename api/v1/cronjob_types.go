@@ -17,6 +17,8 @@ limitations under the License.
 package v1
 
 import (
+	batchv1 "k8s.io/api/batch/v1"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -27,15 +29,56 @@ import (
 type CronJobSpec struct {
 	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
 	// Important: Run "make" to regenerate code after modifying this file
+	//+kubebuilder:validation:MinLength=0
 
-	// Foo is an example field of CronJob. Edit cronjob_types.go to remove/update
-	Foo string `json:"foo,omitempty"`
+	// corn表达式
+	Schedule string `json:"schedule"`
+
+	//+kubebuilder:validation:Minimum=0
+
+	// 可选，等待任务开始执行的最长时间，如果超过该时间任务仍然没有开始执行，就记为失败
+	// +optional
+	StartingDeadlineSeconds *int64 `json:"startingDeadlineSeconds,omitempty"`
+
+	// 可选，声明如何处理同时执行的任务
+	// - "Allow" (默认): 允许同时并发执行多个任务
+	// - "Forbid": 禁止并发执行，如果前一个任务还没有执行结束，那么跳过新的任务
+	// - "Replace": 取消当前正在运行的任务，并且执行新的任务
+	// +optional
+	ConcurrencyPolicy ConcurrencyPolicy `json:"concurrencyPolicy,omitempty"`
+
+	// 可选，设置为true时代表后续的任务都暂停执行（已经开始执行的任务不受影响）
+	// +optional
+	Suspend *bool `json:"suspend,omitempty"`
+
+	// k8s 原生Job定义
+	JobTemplate batchv1.JobTemplateSpec `json:"jobTemplate"`
+
+	//+kubebuilder:validation:Minimum=0
+
+	// 可选，最大保留多少个已经执行成功的历史任务
+	// +optional
+	SuccessfulJobsHistoryLimit *int32 `json:"successfulJobsHistoryLimit,omitempty"`
+
+	//+kubebuilder:validation:Minimum=0
+
+	// 可选，最大保留多少个执行失败的历史任务
+	// +optional
+	FailedJobsHistoryLimit *int32 `json:"failedJobsHistoryLimit,omitempty"`
 }
 
 // CronJobStatus defines the observed state of CronJob
 type CronJobStatus struct {
 	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
 	// Important: Run "make" to regenerate code after modifying this file
+
+	// 指针集合，指向所有正在执行的Job实例
+	// +optional
+	Active []corev1.ObjectReference `json:"active,omitempty"`
+
+	// 记录最后一次调度执行的时间
+	// +optional
+	LastScheduleTime *metav1.Time `json:"lastScheduleTime,omitempty"`
 }
 
 //+kubebuilder:object:root=true
