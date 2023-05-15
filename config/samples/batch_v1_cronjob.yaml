@@ -11,6 +11,7 @@ metadata:
 spec:
   schedule: "*/1 * * * *"
   startingDeadlineSeconds: 60
+  suspend: true
   concurrencyPolicy: Allow # explicitly specify, but Allow is also default.
   jobTemplate:
     spec:

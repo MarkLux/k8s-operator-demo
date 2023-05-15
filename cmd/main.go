@@ -96,10 +96,15 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "CronJob")
 		os.Exit(1)
 	}
-	if err = (&batchv1.CronJob{}).SetupWebhookWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create webhook", "webhook", "CronJob")
-		os.Exit(1)
-	}
+
+	// 为了方便本地启动调试，这里使用环境变量决定是否启用 webhook
+	// if os.Getenv("ENABLE_WEBHOOKS") != "false" {
+	// 	if err = (&batchv1.CronJob{}).SetupWebhookWithManager(mgr); err != nil {
+	// 		setupLog.Error(err, "unable to create webhook", "webhook", "CronJob")
+	// 		os.Exit(1)
+	// 	}
+	// }
+
 	//+kubebuilder:scaffold:builder
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {

@@ -114,115 +114,113 @@ func (r *CronJobReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 				mostRecentTime = scheduledTimeForJob
 			}
 		}
+	}
 
-		// 更新status - 最后一次执行时间
-		if mostRecentTime != nil {
-			cronJob.Status.LastScheduleTime = &metav1.Time{Time: *mostRecentTime}
-		} else {
-			cronJob.Status.LastScheduleTime = nil
-		}
+	// 更新status - 最后一次执行时间
+	if mostRecentTime != nil {
+		cronJob.Status.LastScheduleTime = &metav1.Time{Time: *mostRecentTime}
+	} else {
+		cronJob.Status.LastScheduleTime = nil
+	}
 
-		// 更新status - 所有active状态的Job列表
-		cronJob.Status.Active = nil
-		for _, activeJob := range activeJobs {
-			jobRef, err := ref.GetReference(r.Scheme, activeJob)
-			if err != nil {
-				log.Error(err, "unable to make reference to active job", "job", activeJob)
-				continue
-			}
-			cronJob.Status.Active = append(cronJob.Status.Active, *jobRef)
-		}
-
-		// DEBUG INFO
-		log.V(1).Info("job count", "active jobs", len(activeJobs), "successful jobs", len(successfulJobs), "failed jobs", len(failedJobs))
-
-		// 同步Status的更新到k8s
-		if err := r.Status().Update(ctx, &cronJob); err != nil {
-			log.Error(err, "unable to update CronJob status")
-			return ctrl.Result{}, err
-		}
-
-		// Step 3. 清理历史运行的Job
-		r.cleanUpHistoryJobs(ctx, cronJob, failedJobs, successfulJobs, log)
-
-		// Step 4. 检查CronJob是否suspend了
-		if cronJob.Spec.Suspend != nil && *cronJob.Spec.Suspend {
-			// 如果已经suspend，直接放弃处理返回
-			log.V(1).Info("cronjob suspended, skipping")
-			return ctrl.Result{}, nil
-		}
-
-		// Step 5. 获取下一次执行时间
-		missedRun, nextRun, err := getNextSchedule(&cronJob, r.Now())
+	// 更新status - 所有active状态的Job列表
+	cronJob.Status.Active = nil
+	for _, activeJob := range activeJobs {
+		jobRef, err := ref.GetReference(r.Scheme, activeJob)
 		if err != nil {
-			log.Error(err, "unable to figure out CronJob schedule")
-			// we don't really care about requeuing until we get an update that
-			// fixes the schedule, so don't return an error
-			return ctrl.Result{}, nil
+			log.Error(err, "unable to make reference to active job", "job", activeJob)
+			continue
 		}
+		cronJob.Status.Active = append(cronJob.Status.Active, *jobRef)
+	}
 
-		// 【NOTICE】REQUEUE RESULT
-		scheduledResult := ctrl.Result{RequeueAfter: nextRun.Sub(r.Now())} // save this so we can re-use it elsewhere
-		log = log.WithValues("now", r.Now(), "next run", nextRun)
+	// DEBUG INFO
+	log.V(1).Info("job count", "active jobs", len(activeJobs), "successful jobs", len(successfulJobs), "failed jobs", len(failedJobs))
 
-		// Step 6. 判断是否要运行一个新的Job
+	// 同步Status的更新到k8s
+	if err := r.Status().Update(ctx, &cronJob); err != nil {
+		log.Error(err, "unable to update CronJob status")
+		return ctrl.Result{}, err
+	}
 
-		if missedRun.IsZero() {
-			log.V(1).Info("no upcoming scheduled times, sleeping until next")
-			return scheduledResult, nil
-		}
+	// Step 3. 清理历史运行的Job
+	r.cleanUpHistoryJobs(ctx, cronJob, failedJobs, successfulJobs, log)
 
-		// make sure we're not too late to start the run
-		log = log.WithValues("current run", missedRun)
-		tooLate := false
-		if cronJob.Spec.StartingDeadlineSeconds != nil {
-			tooLate = missedRun.Add(time.Duration(*cronJob.Spec.StartingDeadlineSeconds) * time.Second).Before(r.Now())
-		}
-		if tooLate {
-			log.V(1).Info("missed starting deadline for last run, sleeping till next")
-			// TODO(directxman12): events
-			return scheduledResult, nil
-		}
+	// Step 4. 检查CronJob是否suspend了
+	if cronJob.Spec.Suspend != nil && *cronJob.Spec.Suspend {
+		// 如果已经suspend，直接放弃处理返回
+		log.V(1).Info("cronjob suspended, skipping")
+		return ctrl.Result{}, nil
+	}
 
-		// 检查 ConcurrencyPolicy
-		if cronJob.Spec.ConcurrencyPolicy == batchv1.ForbidConcurrent && len(activeJobs) > 0 {
-			log.V(1).Info("concurrency policy blocks concurrent runs, skipping", "num active", len(activeJobs))
-			return scheduledResult, nil
-		}
+	// Step 5. 获取下一次执行时间
+	missedRun, nextRun, err := getNextSchedule(&cronJob, r.Now())
+	if err != nil {
+		log.Error(err, "unable to figure out CronJob schedule")
+		// we don't really care about requeuing until we get an update that
+		// fixes the schedule, so don't return an error
+		return ctrl.Result{}, nil
+	}
 
-		// ...or instruct us to replace existing ones...
-		if cronJob.Spec.ConcurrencyPolicy == batchv1.ReplaceConcurrent {
-			for _, activeJob := range activeJobs {
-				// we don't care if the job was already deleted
-				if err := r.Delete(ctx, activeJob, client.PropagationPolicy(metav1.DeletePropagationBackground)); client.IgnoreNotFound(err) != nil {
-					log.Error(err, "unable to delete active job", "job", activeJob)
-					return ctrl.Result{}, err
-				}
-			}
-		}
+	// 【NOTICE】REQUEUE RESULT
+	scheduledResult := ctrl.Result{RequeueAfter: nextRun.Sub(r.Now())} // save this so we can re-use it elsewhere
+	log = log.WithValues("now", r.Now(), "next run", nextRun)
 
-		// 构建Job对象
-		job, err := constructJobForCronJob(&cronJob, missedRun, r)
-		if err != nil {
-			log.Error(err, "unable to construct job from template")
-			// don't bother requeuing until we get a change to the spec
-			return scheduledResult, nil
-		}
+	// Step 6. 判断是否要运行一个新的Job
 
-		// 应用到k8s cluster
-		if err := r.Create(ctx, job); err != nil {
-			log.Error(err, "unable to create Job for CronJob", "job", job)
-			return ctrl.Result{}, err
-		}
-
-		log.V(1).Info("created Job for CronJob run", "job", job)
-
-		// Step 7. Requeue
-		// we'll requeue once we see the running job, and update our status
+	if missedRun.IsZero() {
+		log.V(1).Info("no upcoming scheduled times, sleeping until next")
 		return scheduledResult, nil
 	}
 
-	return ctrl.Result{}, nil
+	// make sure we're not too late to start the run
+	log = log.WithValues("current run", missedRun)
+	tooLate := false
+	if cronJob.Spec.StartingDeadlineSeconds != nil {
+		tooLate = missedRun.Add(time.Duration(*cronJob.Spec.StartingDeadlineSeconds) * time.Second).Before(r.Now())
+	}
+	if tooLate {
+		log.V(1).Info("missed starting deadline for last run, sleeping till next")
+		// TODO(directxman12): events
+		return scheduledResult, nil
+	}
+
+	// 检查 ConcurrencyPolicy
+	if cronJob.Spec.ConcurrencyPolicy == batchv1.ForbidConcurrent && len(activeJobs) > 0 {
+		log.V(1).Info("concurrency policy blocks concurrent runs, skipping", "num active", len(activeJobs))
+		return scheduledResult, nil
+	}
+
+	// ...or instruct us to replace existing ones...
+	if cronJob.Spec.ConcurrencyPolicy == batchv1.ReplaceConcurrent {
+		for _, activeJob := range activeJobs {
+			// we don't care if the job was already deleted
+			if err := r.Delete(ctx, activeJob, client.PropagationPolicy(metav1.DeletePropagationBackground)); client.IgnoreNotFound(err) != nil {
+				log.Error(err, "unable to delete active job", "job", activeJob)
+				return ctrl.Result{}, err
+			}
+		}
+	}
+
+	// 构建Job对象
+	job, err := constructJobForCronJob(&cronJob, missedRun, r)
+	if err != nil {
+		log.Error(err, "unable to construct job from template")
+		// don't bother requeuing until we get a change to the spec
+		return scheduledResult, nil
+	}
+
+	// 应用到k8s cluster
+	if err := r.Create(ctx, job); err != nil {
+		log.Error(err, "unable to create Job for CronJob", "job", job)
+		return ctrl.Result{}, err
+	}
+
+	log.V(1).Info("created Job for CronJob run", "job", job)
+
+	// Step 7. Requeue
+	// we'll requeue once we see the running job, and update our status
+	return scheduledResult, nil
 }
 
 func (r *CronJobReconciler) cleanUpHistoryJobs(
