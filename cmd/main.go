@@ -97,7 +97,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	// 为了方便本地启动调试，这里使用环境变量决定是否启用 webhook
+	// 简化一下部署流程，不启用webhook
 	// if os.Getenv("ENABLE_WEBHOOKS") != "false" {
 	// 	if err = (&batchv1.CronJob{}).SetupWebhookWithManager(mgr); err != nil {
 	// 		setupLog.Error(err, "unable to create webhook", "webhook", "CronJob")
