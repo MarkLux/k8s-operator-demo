@@ -25,6 +25,7 @@ import (
 	kbatch "k8s.io/api/batch/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/tools/record"
 	ref "k8s.io/client-go/tools/reference"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -42,9 +43,10 @@ var (
 
 // CronJobReconciler reconciles a CronJob object
 type CronJobReconciler struct {
-	client.Client                 // k8s client (client-go)
-	Scheme        *runtime.Scheme // 对应type的scheme
-	Clock                         // 用于mock时间
+	client.Client                      // k8s client (client-go)
+	Scheme        *runtime.Scheme      // 对应type的scheme
+	Clock                              // 用于mock时间
+	Recorder      record.EventRecorder // 用于记录事件
 }
 
 //+kubebuilder:rbac:groups=batch.marklux.cn,resources=cronjobs,verbs=get;list;watch;create;update;patch;delete
@@ -150,6 +152,7 @@ func (r *CronJobReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	if cronJob.Spec.Suspend != nil && *cronJob.Spec.Suspend {
 		// 如果已经suspend，直接放弃处理返回
 		log.V(1).Info("cronjob suspended, skipping")
+		r.Recorder.Event(&cronJob, "Normal", "Suspend", "cron job suspended.")
 		return ctrl.Result{}, nil
 	}
 
@@ -215,6 +218,8 @@ func (r *CronJobReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		log.Error(err, "unable to create Job for CronJob", "job", job)
 		return ctrl.Result{}, err
 	}
+
+	r.Recorder.Eventf(&cronJob, "Normal", "JobCreated", "new job instance %q created", job.Name)
 
 	log.V(1).Info("created Job for CronJob run", "job", job)
 
